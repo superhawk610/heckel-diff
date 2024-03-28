@@ -102,12 +102,14 @@ pub fn heckel_diff<O: Read, N: Read>(O: O, N: N) -> eyre::Result<()> {
         NA.push(Symbol::Entry(Rc::clone(sym)));
     }
 
-    eprintln!("first pass ===\nsymbols\n{symbols:?}\n\nNA\n{NA:#?}\n");
+    // eprintln!("first pass ===\nsymbols\n{symbols:?}\n\nNA\n{NA:#?}\n");
 
     // second pass
     //
     // identical to the first pass, except we now act on O, OA, OC, and set OLNO
     for (line_num, line) in O.lines().enumerate() {
+        // offset line number by 1 to accommodate virtual BEGIN line
+        let line_num = line_num + 1;
         let line = line?;
         let hash = hash_str(&line);
         let sym = symbols
@@ -128,7 +130,7 @@ pub fn heckel_diff<O: Read, N: Read>(O: O, N: N) -> eyre::Result<()> {
         OA.push(Symbol::Entry(Rc::clone(sym)));
     }
 
-    eprintln!("second pass ===\nsymbols\n{symbols:?}\n\nOA\n{OA:#?}\n");
+    // eprintln!("second pass ===\nsymbols\n{symbols:?}\n\nOA\n{OA:#?}\n");
 
     // third pass
     //
@@ -136,12 +138,14 @@ pub fn heckel_diff<O: Read, N: Read>(O: O, N: N) -> eyre::Result<()> {
     // (we assume) the same unmodified line, replace the symbol table pointers with
     // a reference to the line in the other file
     for (line_num, sym) in NA.iter_mut().enumerate() {
+        // offset line number by 1 to accommodate virtual BEGIN line
+        let line_num = line_num + 1;
         let entry = sym.as_entry_mut().borrow();
         if entry.OC == Occurrences::One && entry.NC == Occurrences::One {
             let OLNO = entry.OLNO.unwrap();
             drop(entry);
             *sym = Symbol::Reference(OLNO);
-            OA[OLNO] = Symbol::Reference(line_num);
+            OA[OLNO - 1] = Symbol::Reference(line_num);
         }
     }
 
@@ -153,11 +157,54 @@ pub fn heckel_diff<O: Read, N: Read>(O: O, N: N) -> eyre::Result<()> {
     OA.push(Symbol::Reference(NA.len()));
     NA.push(Symbol::Reference(OA.len() - 1));
 
-    eprintln!("third pass ===\nOA\n{OA:#?}\nNA\n{NA:#?}\n");
+    // eprintln!("third pass ===\nOA\n{OA:#?}\nNA\n{NA:#?}\n");
 
-    // TODO: fourth pass
-    // TODO: fifth pass
-    // TODO: sixth pass
+    // fourth pass
+    //
+    // use observation 2 to process each line in NA in ascending order:
+    // if NA[i] points to OA[j] and NA[i + 1] and OA[j + 1] contain identical
+    // symbol table entry pointers, then NA[i + 1] and OA[j + 1] refer to each other
+    for i in 0..(NA.len() - 1) {
+        if let Symbol::Reference(j) = NA[i] {
+            if let Symbol::Entry(ref entry_na) = NA[i + 1] {
+                if let Symbol::Entry(ref entry_oa) = OA[j + 1] {
+                    if Rc::ptr_eq(entry_na, entry_oa) {
+                        NA[i + 1] = Symbol::Reference(j + 1);
+                        OA[j + 1] = Symbol::Reference(i + 1);
+                    }
+                }
+            }
+        }
+    }
+
+    // eprintln!("fourth pass ===\nOA\n{OA:#?}\nNA\n{NA:#?}\n");
+
+    // fifth pass
+    //
+    // like the fourth pass, use observation 2 but this time apply it in descending order:
+    // if NA[i] points to OA[j] and NA[i - 1] and OA[j - 1] contain identical
+    // symbol table entry pointers, then NA[i - 1] and OA[j - 1] refer to each other
+    for i in (1..(NA.len() - 1)).rev() {
+        if let Symbol::Reference(j) = NA[i] {
+            if let Symbol::Entry(ref entry_na) = NA[i - 1] {
+                if let Symbol::Entry(ref entry_oa) = OA[j - 1] {
+                    if Rc::ptr_eq(entry_na, entry_oa) {
+                        NA[i - 1] = Symbol::Reference(j - 1);
+                        OA[j - 1] = Symbol::Reference(i - 1);
+                    }
+                }
+            }
+        }
+    }
+
+    // eprintln!("fifth pass ===\nOA\n{OA:#?}\nNA\n{NA:#?}\n");
+
+    // sixth pass
+    //
+    // output the diff:
+    // - if NA[i] points to a symbol table entry, assume that line i is an insert
+    // - if NA[i] points to OA[j], but NA[i + 1] doesn't point to OA[j + 1], then
+    //   line i is at the boundary of a deletion or block move
 
     Ok(())
 }
